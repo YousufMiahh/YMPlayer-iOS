@@ -37,8 +37,9 @@ jobs:
             -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             MARKETING_VERSION=1.0.${{ github.run_number }} CURRENT_PROJECT_VERSION=${{ github.run_number }} \
-            build 2>&1 | tee build.log | grep -E "error:|warning: unre|BUILD|\*\*" || true
-          test -d build/Build/Products/Release-iphoneos/YMPlayer.app
+            build 2>&1 | tee build.log | { grep -E "error:|warning: unre|BUILD|\*\*" || true; }
+          # A failed build can still leave an empty YMPlayer.app behind, so check the app itself is in it
+          test -f build/Build/Products/Release-iphoneos/YMPlayer.app/YMPlayer
 
       - name: Report build errors
         if: failure()
@@ -51,6 +52,7 @@ jobs:
         run: |
           mkdir -p Payload
           cp -R build/Build/Products/Release-iphoneos/YMPlayer.app Payload/
+          test -f Payload/YMPlayer.app/YMPlayer
           zip -qry YMPlayer.ipa Payload
           ls -la YMPlayer.ipa
 

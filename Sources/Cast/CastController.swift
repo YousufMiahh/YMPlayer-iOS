@@ -242,7 +242,8 @@ struct AirPlayButton: UIViewRepresentable {
 
     func makeUIView(context: Context) -> AVRoutePickerView {
         let v = AVRoutePickerView()
-        v.player = cast.avPlayer
+        // (No `v.player` on iOS: that's macOS-only. On iPhone the picker routes the app's
+        // playback, and avPlayer goes to the TV because it allows external playback.)
         v.delegate = context.coordinator
         v.prioritizesVideoDevices = true
         v.tintColor = .white
