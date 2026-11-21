@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 
+@MainActor
 final class AppDelegate: NSObject, UIApplicationDelegate {
     /// Which ways the screen may turn: everything, except on an iPhone, where the app is upright and
     /// the player is sideways (like the Android phone app).

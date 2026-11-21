@@ -219,8 +219,8 @@ struct MovieDetail: View {
             }
         }
         .background(Theme.bg.ignoresSafeArea())
-        .overlay(alignment: .topTrailing) { CloseButton() }
         .ignoresSafeArea(edges: .top)
+        .overlay(alignment: .topTrailing) { CloseButton() }
         .task {
             info = try? await store.api?.vodInfo(item)
             if info?.backdrop == nil, let id = await Tmdb.findId(.movie, name: item.name, known: item.tmdb ?? info?.tmdb) {
@@ -326,8 +326,8 @@ struct SeriesDetail: View {
             }
         }
         .background(Theme.bg.ignoresSafeArea())
-        .overlay(alignment: .topTrailing) { CloseButton() }
         .ignoresSafeArea(edges: .top)
+        .overlay(alignment: .topTrailing) { CloseButton() }
         .fullScreenCover(item: Binding(get: { trailer.map { TrailerID(id: $0) } }, set: { trailer = $0?.id })) { t in
             TrailerSheet(videoId: t.id, title: item.name)
         }
