@@ -62,13 +62,19 @@ jobs:
           name: YMPlayer-ipa
           path: YMPlayer.ipa
 
+      - name: SideStore source (so SideStore can update the app)
+        if: github.ref == 'refs/heads/main'
+        run: python3 Tools/make_source.py ${{ github.run_number }} YMPlayer.ipa Resources/whats_new.txt
+
       - name: Publish release
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.0.${{ github.run_number }}
           name: YM Player for iPhone & iPad 1.0.${{ github.run_number }}
-          files: YMPlayer.ipa
+          files: |
+            YMPlayer.ipa
+            source.json
           body_path: Resources/whats_new.txt
           make_latest: true
 
