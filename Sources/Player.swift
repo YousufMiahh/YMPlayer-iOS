@@ -51,6 +51,12 @@ struct VideoSurface: UIViewRepresentable {
     }
 }
 
+/// Hands a finished VLC player to a background queue to be stopped.
+private final class RetiredPlayer: @unchecked Sendable {
+    let player: VLCMediaPlayer
+    init(_ p: VLCMediaPlayer) { player = p }
+}
+
 struct Track: Identifiable, Hashable {
     let id: Int32
     let name: String
@@ -148,11 +154,8 @@ final class PlayerModel: ObservableObject {
         // Subtitle look changed in Settings: a fresh VLC with the new style, from this video on
         let style = SubtitleStyle.vlcOptions
         if style != vlcStyle {
-            vlc.stop()
-            vlc.drawable = nil
             vlcStyle = style
-            vlc = VLCMediaPlayer(options: style)
-            vlc.drawable = video
+            replaceVLC()
         }
         frozenSince = nil
         lastPictures = -1
@@ -173,6 +176,16 @@ final class PlayerModel: ObservableObject {
         applyPicture()
     }
 
+    /// VLC's stop() waits for the stream to let go, which can take seconds (or hang) while it's
+    /// still buffering, and on the main thread that froze the app, so the Back button did nothing.
+    /// The old player is stopped in the background and a fresh one takes its place straight away.
+    private func replaceVLC() {
+        let old = RetiredPlayer(vlc)
+        vlc = VLCMediaPlayer(options: vlcStyle)
+        vlc.drawable = video
+        DispatchQueue.global(qos: .userInitiated).async { old.player.stop() }
+    }
+
     func retry() {
         guard let u = url else { return }
         open(u, start: isLive ? 0 : time)
@@ -180,7 +193,7 @@ final class PlayerModel: ObservableObject {
 
     func stop() {
         url = nil
-        vlc.stop()
+        replaceVLC()
         playing = false
         buffering = false
         failed = false

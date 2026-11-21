@@ -72,6 +72,7 @@ struct PlayerScreen: View {
                     .overlay(alignment: .topLeading) {
                         Button { store.closePlayer() } label: {
                             Image(systemName: "chevron.down").font(.system(size: 20, weight: .semibold)).foregroundStyle(.white).frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
                         }
                         .padding(16)
                     }
@@ -321,6 +322,7 @@ struct PlayerScreen: View {
         HStack(spacing: 6) {
             Button { store.closePlayer() } label: {
                 Image(systemName: "chevron.left").font(.system(size: 20, weight: .semibold)).frame(width: 44, height: 44)
+                    .contentShape(Rectangle()) // the whole 44pt square is tappable, not just the thin arrow
             }
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.system(size: 17, weight: .bold)).lineLimit(1)
@@ -375,9 +377,13 @@ struct PlayerScreen: View {
                     Text("−" + Fmt.clock(max(0, player.duration - (scrub ?? player.time)))).font(.system(size: 12, weight: .medium).monospacedDigit())
                 }
             }
-            ScrollView(.horizontal, showsIndicators: false) {
+            // Centred when they fit; scrolls sideways only on a narrow screen
+            ViewThatFits(in: .horizontal) {
                 HStack(spacing: 6) { actions }
-                    .frame(minWidth: 0)
+                    .frame(maxWidth: .infinity)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) { actions }
+                }
             }
             .frame(maxWidth: .infinity)
         }

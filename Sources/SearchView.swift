@@ -25,6 +25,7 @@ struct SearchView: View {
                     .autocorrectionDisabled()
                     .submitLabel(.search)
                     .focused($focused)
+                    .onSubmit { focused = false }
                 if searching { ProgressView() }
                 if !query.isEmpty {
                     Button { query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.text3) }
@@ -50,7 +51,11 @@ struct SearchView: View {
         }
         .onChange(of: query) { _ in run() }
         .onChange(of: filter) { _ in run() }
-        .onChange(of: store.page) { p in if p == .search && query.isEmpty { focused = true } }
+        .onChange(of: store.page) { p in
+            if p == .search && query.isEmpty { focused = true } else if p != .search { focused = false }
+        }
+        .onChange(of: store.detail) { d in if d != nil { focused = false } }
+        .onChange(of: store.session?.item.id) { s in if s != nil { focused = false } }
         .onChange(of: store.reselect[.search]) { _ in focused = true }
     }
 

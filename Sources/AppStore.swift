@@ -61,6 +61,7 @@ final class AppStore: ObservableObject {
             let a = Page.allCases.firstIndex(of: page) ?? 0, b = Page.allCases.firstIndex(of: newValue) ?? 0
             if a != b { pageDir = b > a ? 1 : -1 }
         }
+        didSet { if page != oldValue { AppStore.hideKeyboard() } }
     }
     /// Which way the last page change went: new pages slide in from that side.
     private(set) var pageDir: CGFloat = 1
@@ -72,8 +73,13 @@ final class AppStore: ObservableObject {
     @Published var filterVersion = 0
     @Published var top10Films: [Item] = []
     @Published var top10Series: [Item] = []
-    @Published var detail: Item?
-    @Published var session: PlaySession?
+    @Published var detail: Item? { didSet { if detail != nil { AppStore.hideKeyboard() } } }
+    @Published var session: PlaySession? { didSet { if session != nil { AppStore.hideKeyboard() } } }
+
+    /// Opening a page, a video or another tab puts the keyboard away (it used to stay up after a search).
+    static func hideKeyboard() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+    }
     @Published var accountInfo: String?
     @Published var toast: String?
     @Published var recRows: [RecRow] = []

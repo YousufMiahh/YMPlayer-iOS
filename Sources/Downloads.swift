@@ -476,3 +476,53 @@ struct DownloadButton: View {
         return "\(Int(e.fraction * 100))%"
     }
 }
+
+/// The download icon on each episode row: tap to download just that episode. While it
+/// downloads it shows a filling ring (tap to cancel); once it's done, tap for Delete.
+struct EpisodeDownloadIcon: View {
+    @ObservedObject var dl: Downloader
+    let item: Item
+    @State private var askDelete = false
+
+    var body: some View {
+        let e = dl.entry(item)
+        Button {
+            switch e?.state {
+            case .none: dl.add([item])
+            case .some(.failed): dl.retry(e!)
+            case .some(.done): askDelete = true
+            case .some(.running), .some(.waiting): dl.cancel(e!)
+            }
+        } label: {
+            ZStack {
+                switch e?.state {
+                case .none:
+                    Image(systemName: "arrow.down.to.line").font(.system(size: 17, weight: .semibold))
+                case .some(.waiting):
+                    Circle().strokeBorder(Theme.text3, style: StrokeStyle(lineWidth: 2, dash: [3, 3])).frame(width: 24, height: 24)
+                    RoundedRectangle(cornerRadius: 1.5).fill(Theme.text2).frame(width: 8, height: 8)
+                case .some(.running):
+                    Circle().stroke(Theme.text3.opacity(0.5), lineWidth: 2.5).frame(width: 24, height: 24)
+                    Circle().trim(from: 0, to: max(0.03, e?.fraction ?? 0))
+                        .stroke(Theme.accent, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                        .frame(width: 24, height: 24)
+                        .animation(.linear(duration: 0.3), value: e?.fraction ?? 0)
+                    RoundedRectangle(cornerRadius: 1.5).fill(Theme.accent).frame(width: 8, height: 8)
+                case .some(.done):
+                    Image(systemName: "checkmark.circle.fill").font(.system(size: 22)).foregroundStyle(Theme.accent)
+                case .some(.failed):
+                    Image(systemName: "exclamationmark.arrow.circlepath").font(.system(size: 18, weight: .semibold)).foregroundStyle(Theme.pink)
+                }
+            }
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressableStyle())
+        .foregroundStyle(.primary)
+        .accessibilityLabel(e == nil ? "Download episode" : e?.state == .done ? "Downloaded" : "Cancel download")
+        .confirmationDialog(item.name, isPresented: $askDelete, titleVisibility: .visible) {
+            Button("Delete Download", role: .destructive) { if let e = dl.entry(item) { dl.delete(e) } }
+        }
+    }
+}

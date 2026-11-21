@@ -464,7 +464,10 @@ struct SeriesDetail: View {
                     LazyVStack(spacing: 18) {
                         ForEach(eps) { ep in
                             EpisodeRow(episode: ep, progress: store.data.progress[ep.id], watched: store.isWatched(ep),
-                                       download: dl.entry(ep)?.state) { play(ep) }
+                                       download: dl.entry(ep)?.state, trailingSpace: 44) { play(ep) }
+                                .overlay(alignment: .topTrailing) {
+                                    EpisodeDownloadIcon(dl: dl, item: ep).padding(.top, 14) // level with the thumbnail
+                                }
                                 .id(ep.id)
                                 .contextMenu {
                                     Button { play(ep) } label: { Label("Play", systemImage: "play.fill") }
@@ -547,6 +550,8 @@ struct EpisodeRow: View {
     let progress: WatchProgress?
     var watched = false
     var download: Downloader.State? = nil
+    /// Room kept on the right of the title for a button laid over the row (the download icon).
+    var trailingSpace: CGFloat = 0
     let action: () -> Void
 
     var body: some View {
@@ -581,7 +586,7 @@ struct EpisodeRow: View {
                             .compactMap { $0 }
                         if !sub.isEmpty { Text(sub.joined(separator: "  ·  ")).font(.system(size: 12)).foregroundStyle(Theme.text2) }
                     }
-                    Spacer(minLength: 0)
+                    Spacer(minLength: trailingSpace)
                 }
                 if let p = episode.plot {
                     Text(p).font(.system(size: 12)).foregroundStyle(Theme.text2).lineLimit(3).multilineTextAlignment(.leading)
