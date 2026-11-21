@@ -481,25 +481,13 @@ struct PlayerScreen: View {
 
     /// Subtitles & Audio and Picture under one Settings button, like Netflix's cog.
     private var settingsPanel: some View {
-        NavigationStack {
-            List {
-                Button { switchPanel(.tracks) } label: {
-                    Label(live ? "Audio & Subtitles" : "Subtitles & Audio", systemImage: "captions.bubble")
-                }
-                Button { switchPanel(.picture) } label: {
-                    HStack {
-                        Label("Picture", systemImage: "aspectratio")
-                        Spacer()
-                        Text(player.picture == .fill ? "Fill Screen" : player.picture.title).foregroundStyle(.secondary)
-                    }
-                }
-                if item?.kind == .episode { // what the skip-intro lookup found for this episode
-                    Text("Skip Intro: " + (store.segments?.status ?? "looking up this episode…")).font(.footnote).foregroundStyle(.secondary)
-                }
+        SheetPanel(title: "Settings") {
+            SheetRow(live ? "Audio & Subtitles" : "Subtitles & Audio", icon: "captions.bubble") { switchPanel(.tracks) }
+            SheetRow("Picture", detail: player.picture == .fill ? "Fill Screen" : player.picture.title, icon: "aspectratio") { switchPanel(.picture) }
+            if item?.kind == .episode { // what the skip-intro lookup found for this episode
+                SheetEmpty(text: "Skip Intro: " + (store.segments?.status ?? "looking up this episode…")).font(.system(size: 13))
             }
-            .navigationTitle("Settings")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { panel = nil } } }
+            Spacer(minLength: 0)
         }
         .presentationDetents([.medium])
     }
@@ -510,93 +498,90 @@ struct PlayerScreen: View {
     }
 
     private var tracksPanel: some View {
-        NavigationStack {
-            List {
-                Section("Subtitles") {
+        SheetPanel(title: live ? "Audio & Subtitles" : "Subtitles & Audio") {
+            ScrollView {
+                VStack(spacing: 0) {
+                    SheetHeading(text: "Subtitles")
                     let subs = player.subtitleTracks
-                    if subs.isEmpty { Text("None in this stream").foregroundStyle(.secondary) }
+                    if subs.isEmpty { SheetEmpty(text: "None in this stream") }
                     ForEach(subs) { t in
-                        Button { player.setSubtitle(t.id) } label: { check(t.name, t.id == player.currentSubtitle) }
+                        SheetRow(t.name, checked: t.id == player.currentSubtitle) { player.setSubtitle(t.id) }
                     }
-                    Button { panel = nil; DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { pickingSubtitle = true } } label: {
-                        Label("Add a Subtitle File…", systemImage: "doc.badge.plus")
+                    SheetRow("Add a Subtitle File…", icon: "doc.badge.plus") {
+                        panel = nil
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { pickingSubtitle = true }
                     }
-                }
-                Section("Audio") {
+                    SheetHeading(text: "Audio")
                     let audio = player.audioTracks
-                    if audio.isEmpty { Text("Only one").foregroundStyle(.secondary) }
+                    if audio.isEmpty { SheetEmpty(text: "Only one") }
                     ForEach(audio) { t in
-                        Button { player.setAudio(t.id) } label: { check(t.name, t.id == player.currentAudio) }
+                        SheetRow(t.name, checked: t.id == player.currentAudio) { player.setAudio(t.id) }
                     }
                 }
+                .padding(.bottom, 16)
             }
-            .navigationTitle(live ? "Audio & Subtitles" : "Subtitles & Audio")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { panel = nil } } }
         }
         .presentationDetents([.medium, .large])
     }
 
     private var picturePanel: some View {
-        NavigationStack {
-            List {
-                Section {
+        SheetPanel(title: "Picture",
+                   subtitle: "Remembered for " + (item?.kind == .episode ? "this series" : live ? "this channel" : "this film") + ". You can also pinch the picture to fill the screen.") {
+            ScrollView {
+                VStack(spacing: 0) {
                     ForEach(PictureMode.allCases) { m in
-                        Button { store.setPicture(m) } label: { check(m.title, m == player.picture) }
+                        SheetRow(m.title, checked: m == player.picture) { store.setPicture(m) }
                     }
-                } footer: {
-                    Text("Remembered for " + (item?.kind == .episode ? "this series" : live ? "this channel" : "this film") + ". You can also pinch the picture to fill the screen.")
                 }
+                .padding(.bottom, 16)
             }
-            .navigationTitle("Picture")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { panel = nil } } }
         }
         .presentationDetents([.medium, .large])
-    }
-
-    private func check(_ name: String, _ on: Bool) -> some View {
-        HStack {
-            Text(name).foregroundStyle(.primary)
-            Spacer()
-            if on { Image(systemName: "checkmark").foregroundStyle(Theme.accent) }
-        }
     }
 
     /// The channels from the list this one was opened from; tap one to switch.
     private var channelsPanel: some View {
         let list = store.session?.list ?? []
-        return NavigationStack {
+        return SheetPanel(title: "Channels") {
             ScrollViewReader { proxy in
-                List(list) { ch in
-                    Button {
-                        panel = nil
-                        if ch.id != item?.id { store.play(ch, list: list) }
-                    } label: {
-                        HStack(spacing: 12) {
-                            ZStack {
-                                Color.white.opacity(0.08)
-                                RemoteImage(url: ch.iconURL, maxPixel: 160, mode: .fit).padding(4)
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(list) { ch in
+                            let playing = ch.id == item?.id
+                            Button {
+                                panel = nil
+                                if !playing { store.play(ch, list: list) }
+                            } label: {
+                                HStack(spacing: 12) {
+                                    ZStack {
+                                        Color.white.opacity(0.08)
+                                        RemoteImage(url: ch.iconURL, maxPixel: 160, mode: .fit).padding(4)
+                                    }
+                                    .frame(width: 64, height: 38)
+                                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(ch.name).font(.system(size: 16, weight: playing ? .bold : .medium)).lineLimit(1)
+                                        if let p = epg.now(ch.streamId) {
+                                            Text(p.title).font(.system(size: 12)).foregroundStyle(Theme.text2).lineLimit(1)
+                                        }
+                                    }
+                                    Spacer(minLength: 8)
+                                    if playing { Image(systemName: "speaker.wave.2.fill").foregroundStyle(Theme.accent) }
+                                }
+                                .foregroundStyle(.primary)
+                                .padding(.horizontal, 20)
+                                .frame(minHeight: 58)
+                                .contentShape(Rectangle())
                             }
-                            .frame(width: 64, height: 38)
-                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(ch.name).lineLimit(1).foregroundStyle(.primary)
-                                if let p = epg.now(ch.streamId) { Text(p.title).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
-                            }
-                            Spacer()
-                            if ch.id == item?.id { Image(systemName: "speaker.wave.2.fill").foregroundStyle(Theme.accent) }
+                            .buttonStyle(RowPressStyle())
+                            .id(ch.id)
+                            .onAppear { epg.request(ch) }
                         }
                     }
-                    .id(ch.id)
-                    .onAppear { epg.request(ch) }
+                    .padding(.bottom, 16)
                 }
-                .listStyle(.plain)
                 .onAppear { if let id = item?.id { proxy.scrollTo(id, anchor: .center) } }
             }
-            .navigationTitle("Channels")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { panel = nil } } }
         }
     }
 
@@ -604,15 +589,17 @@ struct PlayerScreen: View {
     private var episodesPanel: some View {
         let list = (store.session?.list ?? []).filter { $0.kind == .episode }
         let seasons = Array(Set(list.compactMap { $0.season })).sorted()
-        return NavigationStack {
+        return SheetPanel(title: "Episodes") {
             ScrollViewReader { proxy in
-                List {
-                    ForEach(seasons, id: \.self) { sn in
-                        Section(sn == 0 ? "Specials" : "Season \(sn)") {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(seasons, id: \.self) { sn in
+                            SheetHeading(text: sn == 0 ? "Specials" : "Season \(sn)")
                             ForEach(list.filter { $0.season == sn }) { ep in
+                                let playing = ep.id == item?.id
                                 Button {
                                     panel = nil
-                                    if ep.id != item?.id { store.play(ep, list: list) }
+                                    if !playing { store.play(ep, list: list) }
                                 } label: {
                                     HStack(spacing: 12) {
                                         ZStack {
@@ -625,25 +612,30 @@ struct PlayerScreen: View {
                                         }
                                         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                                         VStack(alignment: .leading, spacing: 3) {
-                                            Text((ep.episode.map { "\($0). " } ?? "") + ep.name).lineLimit(2).foregroundStyle(.primary)
-                                            if let d = ep.duration { Text(d).font(.caption).foregroundStyle(.secondary) }
+                                            Text((ep.episode.map { "\($0). " } ?? "") + ep.name)
+                                                .font(.system(size: 15, weight: playing ? .bold : .medium))
+                                                .lineLimit(2)
+                                                .multilineTextAlignment(.leading)
+                                            if let d = ep.duration { Text(d).font(.system(size: 12)).foregroundStyle(Theme.text2) }
                                         }
-                                        Spacer()
-                                        if ep.id == item?.id { Image(systemName: "play.fill").foregroundStyle(Theme.accent) }
-                                        else if store.isWatched(ep) { Image(systemName: "checkmark").foregroundStyle(.secondary) }
+                                        Spacer(minLength: 8)
+                                        if playing { Image(systemName: "play.fill").foregroundStyle(Theme.accent) }
+                                        else if store.isWatched(ep) { Image(systemName: "checkmark").foregroundStyle(Theme.text2) }
                                     }
+                                    .foregroundStyle(.primary)
+                                    .padding(.horizontal, 20)
+                                    .padding(.vertical, 6)
+                                    .contentShape(Rectangle())
                                 }
+                                .buttonStyle(RowPressStyle())
                                 .id(ep.id)
                             }
                         }
                     }
+                    .padding(.bottom, 16)
                 }
-                .listStyle(.plain)
                 .onAppear { if let id = item?.id { proxy.scrollTo(id, anchor: .center) } }
             }
-            .navigationTitle("Episodes")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { panel = nil } } }
         }
     }
 }

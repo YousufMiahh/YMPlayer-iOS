@@ -325,70 +325,55 @@ struct CategoryPicker: View {
         return f.isEmpty ? out : out.filter { $0.name.lowercased().contains(f) }
     }
 
+    /// The Android app's category sheet: grip, title, a search box, then roomy rows; the chosen
+    /// one is bold with a tick, and a heart at the end of each category favourites it.
     var body: some View {
-        NavigationStack {
-            List {
-                if onlyFavourites && entries.isEmpty {
-                    Text(filter.isEmpty ? "Tap ♡ next to a category in the full list to add it here." : "No matches")
-                        .foregroundStyle(.secondary)
+        let list = entries
+        SheetPanel(title: onlyFavourites ? "Favourite Categories" : kind.title + " Categories",
+                   subtitle: "Press and hold a category to rename or hide it") {
+            SheetSearchField(hint: "Find a category", text: $filter)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        if list.isEmpty {
+                            SheetEmpty(text: onlyFavourites && filter.isEmpty ? "Tap ♡ next to a category in the full list to add it here." : "No matching categories")
+                                .padding(.top, 12)
+                        }
+                        ForEach(list) { e in
+                            row(e).id(e.id)
+                        }
+                    }
+                    .padding(.bottom, 16)
                 }
-                ForEach(entries) { e in
-                    HStack(spacing: 12) {
-                        Button {
-                            selection = e.id
-                            dismiss()
-                        } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: e.icon)
-                                    .foregroundStyle(e.category == nil && e.id == Special.favourites ? Theme.pink : Color.secondary)
-                                    .frame(width: 24)
-                                Text(e.name).lineLimit(2).foregroundStyle(.primary)
-                                Spacer()
-                                if selection == e.id { Image(systemName: "checkmark").foregroundStyle(Theme.accent) }
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        if let c = e.category {
-                            Button { store.toggleFavCategory(kind, c) } label: {
-                                Image(systemName: store.isFavCategory(kind, c) ? "heart.fill" : "heart")
-                                    .foregroundStyle(store.isFavCategory(kind, c) ? Theme.pink : Color.secondary)
-                                    .frame(width: 36, height: 30)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .contextMenu {
-                        if let c = e.category {
-                            Button { store.toggleFavCategory(kind, c) } label: {
-                                Label(store.isFavCategory(kind, c) ? "Remove from Favourite Categories" : "Add to Favourite Categories", systemImage: "heart")
-                            }
-                            Button { renaming = c } label: { Label("Rename…", systemImage: "pencil") }
-                            Button(role: .destructive) { hide(c) } label: { Label("Hide This Category", systemImage: "eye.slash") }
-                        }
-                    }
-                    .swipeActions(edge: .trailing) {
-                        if let c = e.category {
-                            Button(role: .destructive) { hide(c) } label: { Label("Hide", systemImage: "eye.slash") }
-                        }
-                    }
-                }
-            }
-            .listStyle(.insetGrouped)
-            .searchable(text: $filter, placement: .navigationBarDrawer(displayMode: .always), prompt: "Find a category")
-            .navigationTitle(onlyFavourites ? "Favourite Categories" : kind.title + " Categories")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-            .safeAreaInset(edge: .bottom) {
-                Text("Press and hold a category to rename or hide it")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-                    .background(.bar)
+                .scrollDismissesKeyboard(.immediately)
+                .onAppear { if let id = selection { proxy.scrollTo(id, anchor: .center) } }
             }
         }
+        .presentationDetents([.fraction(0.62), .large])
         .sheet(item: $renaming) { c in RenameSheet(kind: kind, category: c).withStore(store) }
+    }
+
+    @ViewBuilder
+    private func row(_ e: Entry) -> some View {
+        let pick = {
+            selection = e.id
+            dismiss()
+        }
+        if let c = e.category {
+            SheetRow(label: e.name, checked: selection == e.id, action: pick) {
+                SheetHeart(on: store.isFavCategory(kind, c)) { store.toggleFavCategory(kind, c) }
+            }
+            .contextMenu {
+                Button { store.toggleFavCategory(kind, c) } label: {
+                    Label(store.isFavCategory(kind, c) ? "Remove from Favourite Categories" : "Add to Favourite Categories", systemImage: "heart")
+                }
+                Button { renaming = c } label: { Label("Rename…", systemImage: "pencil") }
+                Button(role: .destructive) { hide(c) } label: { Label("Hide This Category", systemImage: "eye.slash") }
+            }
+        } else {
+            SheetRow(e.name, checked: selection == e.id, icon: e.icon,
+                     iconColor: e.id == Special.favourites ? Theme.pink : Theme.text2, action: pick)
+        }
     }
 
     private func hide(_ c: Category) {

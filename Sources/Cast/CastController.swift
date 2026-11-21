@@ -331,53 +331,43 @@ struct CastPicker: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationStack {
-            List {
-                Section {
+        SheetPanel(title: "Watch on TV",
+                   subtitle: "Your phone and the TV need to be on the same Wi-Fi. For an Apple TV or AirPlay TV, use the AirPlay button in the player.") {
+            ScrollView {
+                VStack(spacing: 0) {
+                    SheetHeading(text: "Chromecast & Google TV")
                     if browser.devices.isEmpty {
                         HStack(spacing: 12) {
                             if browser.searching { ProgressView() }
                             Text(browser.searching ? "Looking for Chromecasts and Google TVs…" : "No Chromecasts found")
-                                .foregroundStyle(.secondary)
+                                .font(.system(size: 14))
+                                .foregroundStyle(Theme.text2)
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 20)
+                        .frame(minHeight: 50)
                     }
                     ForEach(browser.devices) { d in
-                        Button {
+                        SheetRow(d.name, detail: d.model.isEmpty ? nil : d.model,
+                                 checked: cast.mode == .chromecast && cast.deviceName == d.name, icon: "tv") {
                             dismiss()
                             if store.session == nil {
                                 store.show("Start watching something, then choose your TV")
                             } else {
                                 cast.startChromecast(d)
                             }
-                        } label: {
-                            HStack {
-                                Image(systemName: "tv")
-                                VStack(alignment: .leading) {
-                                    Text(d.name)
-                                    if !d.model.isEmpty { Text(d.model).font(.caption).foregroundStyle(.secondary) }
-                                }
-                                Spacer()
-                                if cast.mode == .chromecast && cast.deviceName == d.name { Image(systemName: "checkmark").foregroundStyle(Theme.accent) }
-                            }
                         }
                     }
-                } header: {
-                    Text("Chromecast & Google TV")
-                } footer: {
-                    Text("Your phone and the TV need to be on the same Wi-Fi. For an Apple TV or AirPlay TV, use the AirPlay button in the player.")
-                }
-                if cast.mode == .chromecast {
-                    Section {
-                        Button("Stop Watching on TV", role: .destructive) {
+                    if cast.mode == .chromecast {
+                        SheetRow("Stop Watching on TV", destructive: true, icon: "xmark.circle", iconColor: Theme.pink) {
                             cast.stop(resumeHere: true)
                             dismiss()
                         }
+                        .padding(.top, 8)
                     }
                 }
+                .padding(.bottom, 16)
             }
-            .navigationTitle("Watch on TV")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
         .onAppear { browser.start() }
         .presentationDetents([.medium, .large])

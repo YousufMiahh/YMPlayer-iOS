@@ -1,4 +1,2 @@
-- Download single episodes: every episode now has its own download button. Tap it again to cancel, or tap the tick to delete it.
-- The Back button in the player works again, even while a video is still loading.
-- The keyboard goes away after a search when you open something.
-- The buttons along the bottom of the player are centred.
+- Settings looks like the Android app now: rounded rows with the setting on the right. Tap a row to turn it on or off, or to move to the next choice.
+- Choosing a category, a channel, an episode, subtitles, audio, the picture size or a TV now uses the Android app's slide-up panel, with a search box for categories and a heart to favourite them.

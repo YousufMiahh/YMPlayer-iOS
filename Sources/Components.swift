@@ -492,33 +492,33 @@ struct RenameSheet: View {
     let category: Category
     @State private var name = ""
 
+    @FocusState private var focused: Bool
+
     var body: some View {
         let original = store.originalName(kind, category)
-        NavigationStack {
-            Form {
-                Section {
-                    TextField("Name", text: $name)
-                        .onSubmit(save)
-                        .submitLabel(.done)
-                } footer: {
-                    Text("Original name: " + original)
-                }
-                Section {
-                    Button("Use the Original Name") {
-                        store.renameCategory(kind, category, to: "")
-                        dismiss()
-                    }
-                }
+        SheetPanel(title: "Rename Category", subtitle: "Original name: " + original) {
+            TextField("Name", text: $name)
+                .font(.system(size: 16))
+                .focused($focused)
+                .submitLabel(.done)
+                .onSubmit(save)
+                .padding(.horizontal, 14)
+                .frame(height: 48)
+                .background(Theme.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+            SheetRow("Save", checked: false, icon: "checkmark", iconColor: Theme.accent, action: save)
+            SheetRow("Use the Original Name", icon: "arrow.uturn.backward") {
+                store.renameCategory(kind, category, to: "")
+                dismiss()
             }
-            .navigationTitle("Rename Category")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) { Button("Save", action: save) }
-            }
+            SheetRow("Cancel", icon: "xmark") { dismiss() }
         }
         .presentationDetents([.medium])
-        .onAppear { name = category.name }
+        .onAppear {
+            name = category.name
+            focused = true
+        }
     }
 
     private func save() {
