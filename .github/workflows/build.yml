@@ -1,0 +1,86 @@
+name: Build iOS app
+
+on:
+  push:
+    branches: [ main, dev ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tools
+        run: |
+          which xcodegen || brew install xcodegen
+          sudo xcode-select -s /Applications/Xcode_16.4.app 2>/dev/null || true
+          xcodebuild -version
+
+      - name: Sync format check (same as the other apps)
+        run: |
+          cat Sources/SyncCore.swift Tools/synccheck.swift > /tmp/synccheck.swift
+          swift /tmp/synccheck.swift
+
+      - name: Generate project
+        run: |
+          xcodegen generate
+          pod install --repo-update
+
+      - name: Build
+        run: |
+          set -o pipefail
+          xcodebuild -workspace YMPlayer.xcworkspace -scheme YMPlayer -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            MARKETING_VERSION=1.0.${{ github.run_number }} CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            build 2>&1 | tee build.log | grep -E "error:|warning: unre|BUILD|\*\*" || true
+          test -d build/Build/Products/Release-iphoneos/YMPlayer.app
+
+      - name: Report build errors
+        if: failure()
+        run: |
+          msg=$(grep -E "error:" build.log | sort -u | head -40)
+          msg="${msg//'%'/'%25'}"; msg="${msg//$'\n'/'%0A'}"; msg="${msg//$'\r'/'%0D'}"
+          echo "::error title=Build failed::$msg"
+
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/YMPlayer.app Payload/
+          zip -qry YMPlayer.ipa Payload
+          ls -la YMPlayer.ipa
+
+      - name: Keep the IPA with this run
+        uses: actions/upload-artifact@v4
+        with:
+          name: YMPlayer-ipa
+          path: YMPlayer.ipa
+
+      - name: Publish release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: YM Player for iPhone & iPad 1.0.${{ github.run_number }}
+          files: YMPlayer.ipa
+          body_path: Resources/whats_new.txt
+          make_latest: true
+
+      - name: Publish test build
+        if: github.ref == 'refs/heads/dev'
+        run: cp YMPlayer.ipa YMPlayer-test.ipa
+
+      - name: Upload test build
+        if: github.ref == 'refs/heads/dev'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: test
+          name: Test build (dev branch)
+          body: "Latest test build from the dev branch (run ${{ github.run_number }}). Not a release."
+          files: YMPlayer-test.ipa
+          prerelease: true
+          make_latest: false

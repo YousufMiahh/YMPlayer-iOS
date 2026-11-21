@@ -1,0 +1,5 @@
+- YM Player is now on iPhone and iPad: Home, Live TV, Movies, Series, Downloads and Search along the bottom, just like the Android app.
+- Watching: videos turn sideways to fill the screen. Tap for controls, double-tap the left or right side to skip, swipe up or down on Live TV to change channel, and pinch to fill the screen.
+- Sync with your other devices: favourites, Continue Watching, watched, your queue, recent channels, categories, subtitle style and your Home rows follow you between your iPhone, Fire TV, Android phone, Mac and Samsung TV when they use the same login.
+- Downloads: save films, episodes or whole seasons to watch without streaming. They're also in the Files app.
+- Watch on a TV with AirPlay or Chromecast.
