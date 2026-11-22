@@ -117,8 +117,10 @@ final class AirPlayRemux: @unchecked Sendable {
         return String(cString: buf)
     }
 
-    private static func codecName(_ id: AVCodecID) -> String {
-        String(cString: avcodec_get_name(id)).uppercased()
+    /// FFmpeg's own short name for a format ("h264", "hevc", "aac"…). Compared by name, not by number:
+    /// the numbers in the bundled headers don't always match the library's.
+    static func codecName(_ id: AVCodecID) -> String {
+        String(cString: avcodec_get_name(id))
     }
 
     private func run(playURL: URL) {
@@ -180,9 +182,10 @@ final class AirPlayRemux: @unchecked Sendable {
         guard vIndex >= 0 else { fail("This video has no picture to send to the TV."); return }
         let aIndex = av_find_best_stream(input, AVMEDIA_TYPE_AUDIO, -1, vIndex, nil, 0)
         let vIn = input.pointee.streams[Int(vIndex)]!
-        let vCodec = vIn.pointee.codecpar.pointee.codec_id
-        guard vCodec == AV_CODEC_ID_H264 || vCodec == AV_CODEC_ID_HEVC else {
-            fail("The Apple TV can't play this video's picture format (\(Self.codecName(vCodec))). Use Screen Mirroring for this one.")
+        let vName = Self.codecName(vIn.pointee.codecpar.pointee.codec_id)
+        let isHEVC = vName == "hevc"
+        guard vName == "h264" || isHEVC else {
+            fail("The Apple TV can't play this video's picture format (\(vName.uppercased())). Use Screen Mirroring for this one.")
             return
         }
         for i in 0..<Int(input.pointee.nb_streams) where i != Int(vIndex) && i != Int(aIndex) {
@@ -209,7 +212,7 @@ final class AirPlayRemux: @unchecked Sendable {
         guard let vOut = avformat_new_stream(oc, nil) else { fail("Out of memory"); return }
         avcodec_parameters_copy(vOut.pointee.codecpar, vIn.pointee.codecpar)
         // Apple wants HEVC tagged "hvc1"; everything else gets the format's default tag
-        vOut.pointee.codecpar.pointee.codec_tag = vCodec == AV_CODEC_ID_HEVC ? Self.tag("hvc1") : 0
+        vOut.pointee.codecpar.pointee.codec_tag = isHEVC ? Self.tag("hvc1") : 0
         vOut.pointee.time_base = vIn.pointee.time_base
 
         // The sound: copied when the Apple TV can play it, otherwise turned into AAC
@@ -219,8 +222,7 @@ final class AirPlayRemux: @unchecked Sendable {
         if aIndex >= 0 {
             let s = input.pointee.streams[Int(aIndex)]!
             aIn = s
-            let id = s.pointee.codecpar.pointee.codec_id
-            let copy = id == AV_CODEC_ID_AAC || id == AV_CODEC_ID_AC3 || id == AV_CODEC_ID_EAC3
+            let copy = ["aac", "ac3", "eac3"].contains(Self.codecName(s.pointee.codecpar.pointee.codec_id))
             let transcoder = copy ? nil : AudioTranscoder(input: s)
             if copy || transcoder != nil, let o = avformat_new_stream(oc, nil) {
                 if let t = transcoder {
@@ -387,7 +389,7 @@ final class AudioTranscoder {
         self.input = input
         guard let par = input.pointee.codecpar,
               let d = avcodec_find_decoder(par.pointee.codec_id),
-              let e = avcodec_find_encoder(AV_CODEC_ID_AAC) else { return nil }
+              let e = avcodec_find_encoder_by_name("aac") else { return nil }
         dec = avcodec_alloc_context3(d)
         enc = avcodec_alloc_context3(e)
         guard let dc = dec, let ec = enc else { return nil }
