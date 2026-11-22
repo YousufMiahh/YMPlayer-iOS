@@ -52,6 +52,19 @@ final class CastController: NSObject, ObservableObject {
             let r = p.rate
             Task { @MainActor in self?.playing = r > 0 }
         }
+        // Picking the TV in the AirPlay list changes the audio route. That's the signal to hand the video
+        // over: the cast player only goes to the TV once it's actually playing, so waiting for it to report
+        // "external playback" first never happens (the TV just gets the phone player's sound).
+        routeObs = NotificationCenter.default.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.routeChanged() }
+        }
+    }
+
+    private var routeObs: NSObjectProtocol?
+
+    /// The AirPlay device the sound is going to now, if any.
+    private var airPlayOutput: AVAudioSessionPortDescription? {
+        AVAudioSession.sharedInstance().currentRoute.outputs.first(where: { $0.portType == .airPlay })
     }
 
     var isCasting: Bool { mode != .none }
@@ -78,9 +91,15 @@ final class CastController: NSObject, ObservableObject {
     /// The AirPlay list is opening: get the stream ready for the TV in the background.
     func pickerWillOpen() {
         pickerOpen = true
-        guard mode == .none, let store = store, let s = store.session, let api = store.api else { return }
+        prepare()
+    }
+
+    /// Load what's playing on the phone into the cast player (paused), ready for the TV.
+    @discardableResult
+    private func prepare() -> Bool {
+        guard mode == .none, let store = store, let s = store.session, let api = store.api else { return false }
         let it = s.item
-        if item?.id == it.id, avPlayer.currentItem != nil { return } // already prepared
+        if item?.id == it.id, avPlayer.currentItem != nil { return true } // already prepared
         teardown()
         item = it
         live = it.kind == .live
@@ -90,31 +109,52 @@ final class CastController: NSObject, ObservableObject {
         message = nil
         guard let c = castable(it, api), c.1 != "video/x-matroska", c.1 != "video/webm" else {
             message = "This video's format can't be sent over AirPlay. Use Screen Mirroring from Control Centre instead."
-            return
+            return false
         }
         let asset = AVURLAsset(url: c.0, options: ["AVURLAssetHTTPUserAgentKey": XtreamAPI.userAgent])
         avPlayer.replaceCurrentItem(with: AVPlayerItem(asset: asset))
         if at > 1 { avPlayer.seek(to: CMTime(seconds: at, preferredTimescale: 600)) }
+        return true
     }
 
     func pickerDidClose() {
         pickerOpen = false
+        routeChanged() // in case the route changed while the list was still on screen
         // Nothing chosen: let go of what we prepared (a moment later, in case the TV is still connecting)
         Task {
             try? await Task.sleep(nanoseconds: 4_000_000_000)
-            if mode == .none && !pickerOpen && !avPlayer.isExternalPlaybackActive { teardown() }
+            if mode == .none && !pickerOpen && !avPlayer.isExternalPlaybackActive && airPlayOutput == nil { teardown() }
         }
+    }
+
+    /// The sound moved to (or off) an AirPlay device: start or stop playing on the TV.
+    private func routeChanged() {
+        if let out = airPlayOutput {
+            guard mode == .none, store?.session != nil else { return }
+            guard prepare() else {
+                if let m = message { store?.show(m) }
+                return
+            }
+            startAirPlay(name: out.portName)
+        } else if mode == .airplay, !avPlayer.isExternalPlaybackActive {
+            stop(resumeHere: true) // AirPlay turned off (here, in Control Centre or from the TV)
+        }
+    }
+
+    /// The phone's player stops and the cast player starts, which sends the picture to the TV.
+    private func startAirPlay(name: String) {
+        guard mode == .none, let store = store else { return }
+        mode = .airplay
+        message = nil
+        deviceName = name
+        if store.player.playing { store.player.togglePause() }
+        avPlayer.play()
     }
 
     private func externalChanged(_ on: Bool) {
         if on && mode == .none {
-            guard let store = store else { return }
-            mode = .airplay
-            message = nil
-            deviceName = AVAudioSession.sharedInstance().currentRoute.outputs.first(where: { $0.portType == .airPlay })?.portName ?? ""
-            if store.player.playing { store.player.togglePause() } // the phone stops; the TV takes over
-            avPlayer.play()
-        } else if !on && mode == .airplay {
+            startAirPlay(name: airPlayOutput?.portName ?? "")
+        } else if !on && mode == .airplay, airPlayOutput == nil {
             stop(resumeHere: true) // AirPlay turned off (here or from the TV)
         }
     }
