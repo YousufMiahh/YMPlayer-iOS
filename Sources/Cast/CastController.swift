@@ -184,8 +184,10 @@ final class CastController: NSObject, ObservableObject {
         preparing = true
         let r = AirPlayRemux(source: src, start: remuxOffset, userAgent: XtreamAPI.userAgent)
         remux = r
-        r.onReady = { [weak self, weak r] url in
+        r.onReady = { [weak self, weak r] url, startedAt in
             guard let self = self, let r = r, self.remux === r, self.mode == .airplay else { return }
+            self.remuxOffset = startedAt // the TV's clock counts from the keyframe it starts on
+            self.time = startedAt
             self.avPlayer.replaceCurrentItem(with: AVPlayerItem(url: url))
             self.avPlayer.play()
             self.preparing = false

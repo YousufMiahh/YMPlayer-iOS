@@ -16,8 +16,9 @@ import Libswresample
 /// - It starts from where you are, stays a couple of minutes ahead of the TV, and starts again from the new
 ///   place when you skip outside what's been made.
 final class AirPlayRemux: @unchecked Sendable {
-    /// Called on the main thread with the address the TV should play, once the first segments are ready.
-    var onReady: (@MainActor (URL) -> Void)?
+    /// Called on the main thread with the address the TV should play, once the first segments are ready,
+    /// and where in the film that starts (the keyframe at or just before where you were).
+    var onReady: (@MainActor (URL, Double) -> Void)?
     /// Called on the main thread when it can't carry on, with a message for the user.
     var onFailure: (@MainActor (String) -> Void)?
 
@@ -28,6 +29,7 @@ final class AirPlayRemux: @unchecked Sendable {
     private let token = UUID().uuidString.lowercased()
     private let server: LocalFileServer
     private let flag = CancelFlag()
+    private var httpSource: HTTPSource?
     private let lock = NSLock()
     private var _playhead: Double = 0
     private var _produced: Double = 0
@@ -80,6 +82,8 @@ final class AirPlayRemux: @unchecked Sendable {
     /// Stop making segments, stop serving them and delete them.
     func stop() {
         flag.cancelled = true
+        lock.lock(); let src = httpSource; lock.unlock()
+        src?.cancel()
         server.stop()
         let d = dir
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 3) {
@@ -93,10 +97,12 @@ final class AirPlayRemux: @unchecked Sendable {
         Task { @MainActor in cb?(message) }
     }
 
+    private var startedAt: Double = 0
+
     private func ready(_ url: URL) {
         guard !flag.cancelled else { return }
-        let cb = onReady
-        Task { @MainActor in cb?(url) }
+        let cb = onReady, at = startedAt
+        Task { @MainActor in cb?(url, at) }
     }
 
     // MARK: the remux
@@ -116,24 +122,49 @@ final class AirPlayRemux: @unchecked Sendable {
     }
 
     private func run(playURL: URL) {
+        // The file comes through iOS's networking (as everywhere else in the app), not FFmpeg's
+        let src = HTTPSource(url: source, userAgent: userAgent)
+        lock.lock(); httpSource = src; lock.unlock()
+        defer { src.cancel() }
+        if flag.cancelled { return }
+        if let e = src.open() {
+            fail("Couldn't get this video from your provider for AirPlay (\(e)).")
+            return
+        }
+        let ioSize: Int32 = 256 << 10
+        guard let ioBuf = av_malloc(Int(ioSize)) else { fail("Out of memory"); return }
+        let opaque = Unmanaged.passUnretained(src).toOpaque()
+        var pb: UnsafeMutablePointer<AVIOContext>? = avio_alloc_context(
+            ioBuf.assumingMemoryBound(to: UInt8.self), ioSize, 0, opaque,
+            { op, buf, n in
+                guard let op = op, let buf = buf else { return -5 }
+                return Unmanaged<HTTPSource>.fromOpaque(op).takeUnretainedValue().read(buf, n)
+            },
+            nil,
+            { op, offset, whence in
+                guard let op = op else { return -1 }
+                return Unmanaged<HTTPSource>.fromOpaque(op).takeUnretainedValue().seek(offset, whence)
+            })
+        guard let io = pb else { av_free(ioBuf); fail("Out of memory"); return }
+        defer {
+            av_freep(&pb!.pointee.buffer) // FFmpeg may have swapped the buffer; free whatever it holds now
+            avio_context_free(&pb)
+        }
+        if !src.rangesWork { io.pointee.seekable = 0 } // can only read straight through
+
         var ic: UnsafeMutablePointer<AVFormatContext>? = avformat_alloc_context()
         guard ic != nil else { fail("Out of memory"); return }
+        ic!.pointee.pb = io
+        ic!.pointee.flags |= 0x0080 // AVFMT_FLAG_CUSTOM_IO
         ic!.pointee.interrupt_callback = AVIOInterruptCB(callback: { opaque in
             guard let opaque = opaque else { return 0 }
             return Unmanaged<CancelFlag>.fromOpaque(opaque).takeUnretainedValue().cancelled ? 1 : 0
         }, opaque: Unmanaged.passUnretained(flag).toOpaque())
 
-        var inOpts: OpaquePointer?
-        av_dict_set(&inOpts, "user_agent", userAgent, 0)
-        av_dict_set(&inOpts, "reconnect", "1", 0)
-        av_dict_set(&inOpts, "reconnect_streamed", "1", 0)
-        av_dict_set(&inOpts, "reconnect_on_network_error", "1", 0)
-        av_dict_set(&inOpts, "reconnect_delay_max", "4", 0)
-        av_dict_set(&inOpts, "rw_timeout", "20000000", 0)
-        var err = avformat_open_input(&ic, source.absoluteString, nil, &inOpts)
-        av_dict_free(&inOpts)
+        // The name is only a hint for working out the format (".mkv" and so on)
+        var err = avformat_open_input(&ic, source.lastPathComponent, nil, nil)
         guard err >= 0, let input = ic else {
-            fail("Couldn't open this video for AirPlay (\(Self.describe(err))).")
+            fail("Couldn't read this video for AirPlay (\(Self.describe(err))).")
             return
         }
         defer { var c: UnsafeMutablePointer<AVFormatContext>? = input; avformat_close_input(&c) }
@@ -159,9 +190,12 @@ final class AirPlayRemux: @unchecked Sendable {
         }
 
         // Start from where you were on the phone
+        let startUs = Int64(startTime * 1_000_000)
+        var notBeforeUs = Int64.min // reading straight through: skip to where you were
         if startTime > 1 {
-            let ts = Int64(startTime * 1_000_000)
-            avformat_seek_file(input, -1, Int64.min, ts, ts, 0)
+            if !src.rangesWork || avformat_seek_file(input, -1, Int64.min, startUs, startUs, 0) < 0 {
+                notBeforeUs = startUs - 2_000_000
+            }
         }
 
         // The output: HLS with fragmented-MP4 segments
@@ -258,7 +292,11 @@ final class AirPlayRemux: @unchecked Sendable {
             // Begin on a keyframe; sound from before it is dropped
             if baseUs == nil {
                 guard si == vIndex, pkt.pointee.flags & AV_PKT_FLAG_KEY != 0 else { continue }
-                baseUs = av_rescale_q(pkt.pointee.pts, tb, Self.microseconds)
+                let us = av_rescale_q(pkt.pointee.pts, tb, Self.microseconds)
+                guard us >= notBeforeUs else { continue }
+                baseUs = us
+                let fileStart = input.pointee.start_time != Self.noPTS ? input.pointee.start_time : 0
+                startedAt = max(0, Double(us - fileStart) / 1_000_000)
             }
             let base = av_rescale_q(baseUs!, Self.microseconds, tb)
 
@@ -650,5 +688,223 @@ final class LocalFileServer: @unchecked Sendable {
             if other == nil { other = ip }
         }
         return other
+    }
+}
+
+// MARK: - reading the file from the provider
+
+/// Reads the provider's file with iOS's own networking (URLSession: redirects, HTTPS and the user agent
+/// handled the same way as the rest of the app) and hands the bytes to FFmpeg, seeking with range requests.
+final class HTTPSource: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private let url: URL
+    private let userAgent: String
+    private var session: URLSession!
+    private let cond = NSCondition()
+
+    // All below guarded by `cond`
+    private var buffer = Data()          // bytes of the file from `bufferStart`
+    private var bufferStart: Int64 = 0
+    private var readPos: Int64 = 0
+    private var skip: Int64 = 0          // a server that ignores ranges: bytes to throw away
+    private var task: URLSessionDataTask?
+    private var generation = 0
+    private var responded = false
+    private var finished = false
+    private var failure: String?
+    private var cancelled = false
+    private var suspended = false
+    private(set) var size: Int64 = -1
+    private(set) var rangesWork = false
+
+    private let maxBuffered = 24 << 20   // stop downloading this far ahead of FFmpeg
+    private let keepBehind = 2 << 20     // keep a little already-read data for short backward seeks
+
+    init(url: URL, userAgent: String) {
+        self.url = url
+        self.userAgent = userAgent
+        super.init()
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.timeoutIntervalForRequest = 30
+        cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
+        let q = OperationQueue()
+        q.maxConcurrentOperationCount = 1
+        session = URLSession(configuration: cfg, delegate: self, delegateQueue: q)
+    }
+
+    /// Connect and wait for the server's answer. Returns an error message, or nil once it's sending the file.
+    func open() -> String? {
+        cond.lock()
+        startTask(at: 0)
+        let deadline = Date().addingTimeInterval(30)
+        while !responded && !cancelled && failure == nil {
+            if !cond.wait(until: deadline) { break }
+        }
+        let f = failure ?? (responded ? nil : (cancelled ? "Cancelled" : "Your provider didn't answer"))
+        cond.unlock()
+        return f
+    }
+
+    func cancel() {
+        cond.lock()
+        cancelled = true
+        task?.cancel()
+        cond.broadcast()
+        cond.unlock()
+        session.invalidateAndCancel()
+    }
+
+    /// Called with `cond` held.
+    private func startTask(at offset: Int64) {
+        task?.cancel()
+        generation += 1
+        buffer = Data()
+        bufferStart = offset
+        skip = 0
+        responded = false
+        finished = false
+        failure = nil
+        suspended = false
+        var req = URLRequest(url: url)
+        req.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        req.setValue("bytes=\(offset)-", forHTTPHeaderField: "Range")
+        let t = session.dataTask(with: req)
+        t.taskDescription = String(generation)
+        task = t
+        t.resume()
+    }
+
+    // MARK: URLSession
+
+    /// The server's answer to the current request. Called with `cond` held.
+    private func handleResponse(_ t: URLSessionTask) {
+        guard !responded, failure == nil else { return }
+        let http = t.response as? HTTPURLResponse
+        let code = http?.statusCode ?? 200
+        if code >= 400 {
+            failure = "Your provider refused the video (HTTP \(code))"
+            t.cancel()
+            return
+        }
+        responded = true
+        if code == 206, let cr = http?.value(forHTTPHeaderField: "Content-Range"),
+           let total = cr.split(separator: "/").last.flatMap({ Int64($0) }) {
+            rangesWork = true
+            size = total
+        } else {
+            // A whole-file answer: if we asked for a later part, throw away the bytes before it
+            skip = bufferStart
+            if let len = t.response?.expectedContentLength, len > 0 { size = len }
+            if bufferStart == 0, http?.value(forHTTPHeaderField: "Accept-Ranges")?.lowercased() == "bytes" { rangesWork = true }
+        }
+    }
+
+    func urlSession(_ s: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        cond.lock()
+        defer { cond.broadcast(); cond.unlock() }
+        guard dataTask.taskDescription == String(generation) else { return }
+        handleResponse(dataTask)
+        guard failure == nil else { return }
+        var d = data
+        if skip > 0 {
+            let n = Int(min(skip, Int64(d.count)))
+            skip -= Int64(n)
+            d = d.subdata(in: d.startIndex + n ..< d.endIndex)
+        }
+        buffer.append(d)
+        if Int64(buffer.count) - (readPos - bufferStart) > Int64(maxBuffered), !suspended {
+            suspended = true
+            dataTask.suspend()
+        }
+    }
+
+    func urlSession(_ s: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        cond.lock()
+        defer { cond.broadcast(); cond.unlock() }
+        guard task.taskDescription == String(generation) else { return }
+        if error == nil { handleResponse(task) }
+        finished = true
+        if let e = error as NSError?, e.code != NSURLErrorCancelled, failure == nil {
+            failure = e.localizedDescription
+        }
+    }
+
+    // MARK: FFmpeg's side
+
+    private static let EXIT: Int32 = -1_414_092_869 // AVERROR_EXIT
+    private static let EOF: Int32 = -541_478_725    // AVERROR_EOF
+    private static let IO: Int32 = -EIO
+
+    /// Copy up to `n` bytes to `out`; waits for the download. Runs on the remux thread.
+    func read(_ out: UnsafeMutablePointer<UInt8>, _ n: Int32) -> Int32 {
+        cond.lock()
+        defer { cond.unlock() }
+        var retries = 0
+        while true {
+            if cancelled { return Self.EXIT }
+            let end = bufferStart + Int64(buffer.count)
+            if readPos >= bufferStart && readPos < end {
+                let off = Int(readPos - bufferStart)
+                let k = min(Int(n), buffer.count - off)
+                buffer.withUnsafeBytes { raw in
+                    out.update(from: raw.baseAddress!.advanced(by: off).assumingMemoryBound(to: UInt8.self), count: k)
+                }
+                readPos += Int64(k)
+                // Let go of what's been read, keeping a little for short backward seeks
+                let used = Int(readPos - bufferStart)
+                if used > keepBehind * 2 {
+                    let drop = used - keepBehind
+                    buffer.removeSubrange(buffer.startIndex ..< buffer.startIndex + drop)
+                    buffer = Data(buffer) // re-base indices at 0
+                    bufferStart += Int64(drop)
+                }
+                if suspended, Int64(buffer.count) - (readPos - bufferStart) < Int64(maxBuffered / 2) {
+                    suspended = false
+                    task?.resume()
+                }
+                return Int32(k)
+            }
+            if size >= 0 && readPos >= size { return Self.EOF }
+            if finished {
+                // The download ended early or dropped: pick up where we are
+                if size < 0 && failure == nil && readPos >= end { return Self.EOF }
+                retries += 1
+                if retries > 4 { return Self.IO }
+                startTask(at: readPos)
+                continue
+            }
+            if !cond.wait(until: Date().addingTimeInterval(25)) {
+                retries += 1
+                if retries > 4 { return Self.IO }
+                startTask(at: readPos) // stalled: ask again
+            }
+        }
+    }
+
+    /// FFmpeg moves around the file (an MKV's index is often at the end).
+    func seek(_ offset: Int64, _ whence: Int32) -> Int64 {
+        cond.lock()
+        defer { cond.unlock() }
+        if whence & 0x10000 != 0 { return size } // AVSEEK_SIZE
+        let target: Int64
+        switch whence & 0xFF {
+        case SEEK_SET: target = offset
+        case SEEK_CUR: target = readPos + offset
+        case SEEK_END:
+            guard size >= 0 else { return -1 }
+            target = size + offset
+        default: return -1
+        }
+        guard target >= 0 else { return -1 }
+        let end = bufferStart + Int64(buffer.count)
+        if target >= bufferStart && target <= end + (1 << 20) && !finished {
+            readPos = target // in what we have, or just ahead of the download
+        } else if target >= bufferStart && target < end {
+            readPos = target
+        } else {
+            guard rangesWork || target == 0 else { return -1 }
+            readPos = target
+            startTask(at: target)
+        }
+        return target
     }
 }
