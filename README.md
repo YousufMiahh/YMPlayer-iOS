@@ -8,7 +8,7 @@ laid out like the Android phone app.
   skip −5 s / +10 s, swipe up / down on Live TV to change channel, pinch to fill the screen
 - VLC plays everything (live TS / HLS, MKV, MP4), with every audio and subtitle track
 - Netflix UK Top 10, Continue Watching, your Queue, "Because you watched", favourites, Skip Intro and Next Episode
-- TV guide, downloads (also in the Files app), AirPlay and Chromecast, multiple accounts, light / dark theme
+- TV guide, downloads (also in the Files app), AirPlay (MKV files are repackaged on the phone for the Apple TV) and Chromecast, multiple accounts, light / dark theme
 - Syncs favourites, Continue Watching and more with the Fire TV, Android, Mac and Samsung apps
 
 ## Install

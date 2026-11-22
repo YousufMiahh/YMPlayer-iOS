@@ -91,7 +91,12 @@ struct RootView: View {
             }
         }
         .onChange(of: phase) { p in
-            if p == .background { store.saveCurrentProgress() }
+            if p == .background {
+                store.saveCurrentProgress()
+                // The app can now run in the background (to keep feeding AirPlay); on the phone itself,
+                // leaving the app still pauses the video as before
+                if !store.cast.isCasting, store.player.playing { store.player.togglePause() }
+            }
         }
         .tint(Theme.accent)
     }

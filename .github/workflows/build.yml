@@ -25,6 +25,9 @@ jobs:
           cat Sources/SyncCore.swift Tools/synccheck.swift > /tmp/synccheck.swift
           swift /tmp/synccheck.swift
 
+      - name: FFmpeg (AirPlay of MKV files)
+        run: bash Tools/fetch_ffmpeg.sh
+
       - name: Generate project
         run: |
           xcodegen generate

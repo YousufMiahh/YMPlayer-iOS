@@ -17,6 +17,18 @@ targets:
     sources:
       - Sources
       - Resources
+    # FFmpeg (Tools/fetch_ffmpeg.sh): repackages MKV and other files for AirPlay
+    dependencies:
+      - framework: Vendor/Libavformat.xcframework
+        embed: true
+      - framework: Vendor/Libavcodec.xcframework
+        embed: true
+      - framework: Vendor/Libavutil.xcframework
+        embed: true
+      - framework: Vendor/Libswresample.xcframework
+        embed: true
+      - framework: Vendor/libzvbi.xcframework
+        embed: true
     info:
       path: Generated/Info.plist
       properties:
@@ -46,7 +58,10 @@ targets:
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         # Watching on a TV: finding Chromecasts and Google TVs on your network
-        NSLocalNetworkUsageDescription: YM Player looks for Chromecasts and Google TVs on your network and sends them what you're watching.
+        NSLocalNetworkUsageDescription: YM Player looks for Chromecasts and Google TVs on your network and sends them, or your Apple TV, what you're watching.
+        # Keeps sending the video to the Apple TV while the phone is locked
+        UIBackgroundModes:
+          - audio
         NSBonjourServices:
           - _googlecast._tcp
         # Plain http:// providers

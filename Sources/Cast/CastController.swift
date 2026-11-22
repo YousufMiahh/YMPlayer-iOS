@@ -34,6 +34,13 @@ final class CastController: NSObject, ObservableObject {
 
     private var item: Item?
     private var live = false
+    /// Files the Apple TV can't open (MKV…) are repackaged on the phone while you watch.
+    private var remux: AirPlayRemux?
+    private var remuxSource: URL?
+    /// Where the current remux started (the TV's clock counts from there).
+    private var remuxOffset: Double = 0
+    /// Don't try AirPlay again for something that just failed, until AirPlay is turned off.
+    private var failedItem: String?
     private var timeObserver: Any?
     private var externalObs: NSKeyValueObservation?
     private var rateObs: NSKeyValueObservation?
@@ -94,12 +101,15 @@ final class CastController: NSObject, ObservableObject {
         prepare()
     }
 
-    /// Load what's playing on the phone into the cast player (paused), ready for the TV.
+    private enum Prepared { case direct, remux(URL), unsupported }
+
+    /// Get ready to send what's playing on the phone: straight to the TV (MP4, HLS, live) is loaded into the
+    /// cast player (paused) now; anything else needs repackaging on the phone, started once the TV is chosen.
     @discardableResult
-    private func prepare() -> Bool {
-        guard mode == .none, let store = store, let s = store.session, let api = store.api else { return false }
+    private func prepare() -> Prepared {
+        guard mode == .none, let store = store, let s = store.session, let api = store.api else { return .unsupported }
         let it = s.item
-        if item?.id == it.id, avPlayer.currentItem != nil { return true } // already prepared
+        if item?.id == it.id, avPlayer.currentItem != nil { return .direct } // already prepared
         teardown()
         item = it
         live = it.kind == .live
@@ -108,13 +118,15 @@ final class CastController: NSObject, ObservableObject {
         time = at
         message = nil
         guard let c = castable(it, api), c.1 != "video/x-matroska", c.1 != "video/webm" else {
+            // MKV, AVI and the like: the phone repackages them for the TV
+            if !live, let src = api.playURL(it, liveFormat: "ts") { return .remux(src) }
             message = "This video's format can't be sent over AirPlay. Use Screen Mirroring from Control Centre instead."
-            return false
+            return .unsupported
         }
         let asset = AVURLAsset(url: c.0, options: ["AVURLAssetHTTPUserAgentKey": XtreamAPI.userAgent])
         avPlayer.replaceCurrentItem(with: AVPlayerItem(asset: asset))
         if at > 1 { avPlayer.seek(to: CMTime(seconds: at, preferredTimescale: 600)) }
-        return true
+        return .direct
     }
 
     func pickerDidClose() {
@@ -130,25 +142,61 @@ final class CastController: NSObject, ObservableObject {
     /// The sound moved to (or off) an AirPlay device: start or stop playing on the TV.
     private func routeChanged() {
         if let out = airPlayOutput {
-            guard mode == .none, store?.session != nil else { return }
-            guard prepare() else {
+            guard mode == .none, let s = store?.session, failedItem != s.item.id else { return }
+            switch prepare() {
+            case .direct:
+                startAirPlay(name: out.portName)
+            case .remux(let src):
+                startAirPlay(name: out.portName, remuxing: src)
+            case .unsupported:
+                failedItem = s.item.id
                 if let m = message { store?.show(m) }
-                return
             }
-            startAirPlay(name: out.portName)
-        } else if mode == .airplay, !avPlayer.isExternalPlaybackActive {
-            stop(resumeHere: true) // AirPlay turned off (here, in Control Centre or from the TV)
+        } else {
+            failedItem = nil
+            if mode == .airplay, !avPlayer.isExternalPlaybackActive {
+                stop(resumeHere: true) // AirPlay turned off (here, in Control Centre or from the TV)
+            }
         }
     }
 
     /// The phone's player stops and the cast player starts, which sends the picture to the TV.
-    private func startAirPlay(name: String) {
+    private func startAirPlay(name: String, remuxing src: URL? = nil) {
         guard mode == .none, let store = store else { return }
         mode = .airplay
         message = nil
         deviceName = name
         if store.player.playing { store.player.togglePause() }
-        avPlayer.play()
+        if let src = src {
+            startRemux(src, at: live ? 0 : store.player.time)
+        } else {
+            avPlayer.play()
+        }
+    }
+
+    /// Repackage the file on the phone from `at` seconds and play that on the TV once it's ready.
+    private func startRemux(_ src: URL, at: Double) {
+        remux?.stop()
+        avPlayer.replaceCurrentItem(with: nil)
+        remuxSource = src
+        remuxOffset = max(0, at)
+        time = remuxOffset
+        preparing = true
+        let r = AirPlayRemux(source: src, start: remuxOffset, userAgent: XtreamAPI.userAgent)
+        remux = r
+        r.onReady = { [weak self, weak r] url in
+            guard let self = self, let r = r, self.remux === r, self.mode == .airplay else { return }
+            self.avPlayer.replaceCurrentItem(with: AVPlayerItem(url: url))
+            self.avPlayer.play()
+            self.preparing = false
+        }
+        r.onFailure = { [weak self, weak r] msg in
+            guard let self = self, let r = r, self.remux === r else { return }
+            self.failedItem = self.item?.id
+            self.store?.show(msg)
+            self.stop(resumeHere: true)
+        }
+        r.start()
     }
 
     private func externalChanged(_ on: Bool) {
@@ -232,6 +280,16 @@ final class CastController: NSObject, ObservableObject {
         let target = max(0, duration > 0 ? min(t, duration - 5) : t)
         time = target
         if mode == .chromecast { chromecast?.seek(target); return }
+        if let r = remux, let src = remuxSource {
+            // Within what's been made: skip there; otherwise start making it again from the new place
+            let rel = target - remuxOffset
+            if !preparing, rel >= 0, rel <= r.produced - 4 {
+                avPlayer.seek(to: CMTime(seconds: rel, preferredTimescale: 600))
+            } else {
+                startRemux(src, at: target)
+            }
+            return
+        }
         avPlayer.seek(to: CMTime(seconds: target, preferredTimescale: 600))
     }
 
@@ -257,16 +315,25 @@ final class CastController: NSObject, ObservableObject {
     }
 
     private func teardown() {
+        remux?.stop()
+        remux = nil
+        remuxSource = nil
+        remuxOffset = 0
         avPlayer.replaceCurrentItem(with: nil)
         item = nil
         preparing = false
     }
 
     private func tick(_ t: CMTime) {
-        guard mode == .airplay else { return }
+        guard mode == .airplay, !preparing else { return }
         let s = t.seconds
-        if s.isFinite { time = s }
-        if duration <= 0, let d = avPlayer.currentItem?.duration.seconds, d.isFinite, d > 0 { duration = d }
+        if let r = remux {
+            // The TV's clock starts where the repackaging started
+            if s.isFinite { time = remuxOffset + s; r.playhead = s }
+        } else {
+            if s.isFinite { time = s }
+            if duration <= 0, let d = avPlayer.currentItem?.duration.seconds, d.isFinite, d > 0 { duration = d }
+        }
         // Finished on the TV
         if !live, duration > 60, time >= duration - 2, avPlayer.rate == 0 {
             store?.castFinished()

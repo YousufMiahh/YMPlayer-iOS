@@ -6,3 +6,4 @@ Podfile.lock
 Generated/
 .DS_Store
 *.dmg
+Vendor/
