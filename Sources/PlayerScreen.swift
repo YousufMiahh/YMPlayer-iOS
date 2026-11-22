@@ -330,6 +330,7 @@ struct PlayerScreen: View {
             }
             Spacer()
             AirPlayButton(cast: cast).frame(width: 44, height: 44)
+                .background(CastVideoLayer(player: cast.avPlayer).frame(width: 16, height: 9))
             Button { castSheet = true } label: {
                 Image(systemName: cast.mode == .chromecast ? "tv.fill" : "tv").font(.system(size: 19)).frame(width: 44, height: 44)
             }

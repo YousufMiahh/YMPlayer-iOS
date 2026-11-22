@@ -267,6 +267,30 @@ struct AirPlayButton: UIViewRepresentable {
     }
 }
 
+/// Keeps the AirPlay player attached to a video layer. Without one, iOS can send only the audio to the TV
+/// (the picture stays on the phone); with one, AirPlay hands the whole video over. It's tiny and almost invisible.
+struct CastVideoLayer: UIViewRepresentable {
+    let player: AVPlayer
+
+    final class LayerView: UIView {
+        override static var layerClass: AnyClass { AVPlayerLayer.self }
+        var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+    }
+
+    func makeUIView(context: Context) -> LayerView {
+        let v = LayerView()
+        v.isUserInteractionEnabled = false
+        v.alpha = 0.01
+        v.playerLayer.player = player
+        v.playerLayer.videoGravity = .resizeAspect
+        return v
+    }
+
+    func updateUIView(_ v: LayerView, context: Context) {
+        if v.playerLayer.player !== player { v.playerLayer.player = player }
+    }
+}
+
 /// Shown in place of the picture while it plays on the TV.
 struct CastingView: View {
     @ObservedObject var cast: CastController
