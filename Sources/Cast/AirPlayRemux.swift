@@ -24,6 +24,10 @@ final class AirPlayRemux: @unchecked Sendable {
 
     let source: URL
     let startTime: Double
+    /// Which of the file's subtitle tracks the phone was showing (counting the file's own tracks from 0), if any.
+    private let subtitleChoice: Int?
+    /// Whether the TV should show subtitles straight away (they were on on the phone).
+    let showSubtitles: Bool
     private let userAgent: String
     private let dir: URL
     private let token = UUID().uuidString.lowercased()
@@ -51,8 +55,10 @@ final class AirPlayRemux: @unchecked Sendable {
     /// Stay this far ahead of the TV at most.
     private let ahead: Double = 150
 
-    init(source: URL, start: Double, userAgent: String) {
+    init(source: URL, start: Double, userAgent: String, subtitle: Int? = nil, showSubtitles: Bool = false) {
         self.source = source
+        self.subtitleChoice = subtitle
+        self.showSubtitles = showSubtitles
         self.startTime = max(0, start)
         self.userAgent = userAgent
         dir = FileManager.default.temporaryDirectory.appendingPathComponent("airplay-" + UUID().uuidString, isDirectory: true)
@@ -71,7 +77,7 @@ final class AirPlayRemux: @unchecked Sendable {
                 self.fail("Couldn't start sending this video to the TV. Try again, or use Screen Mirroring.")
                 return
             }
-            let url = URL(string: "http://\(ip):\(port)/\(self.token)/index.m3u8")!
+            let url = URL(string: "http://\(ip):\(port)/\(self.token)/master.m3u8")!
             let t = Thread { [self] in self.run(playURL: url) }
             t.name = "YM Player AirPlay remux"
             t.qualityOfService = .userInitiated
@@ -188,7 +194,8 @@ final class AirPlayRemux: @unchecked Sendable {
             fail("The Apple TV can't play this video's picture format (\(vName.uppercased())). Use Screen Mirroring for this one.")
             return
         }
-        for i in 0..<Int(input.pointee.nb_streams) where i != Int(vIndex) && i != Int(aIndex) {
+        let sIndex = pickSubtitles(input)
+        for i in 0..<Int(input.pointee.nb_streams) where i != Int(vIndex) && i != Int(aIndex) && i != sIndex {
             input.pointee.streams[i]!.pointee.discard = AVDISCARD_ALL
         }
 
@@ -208,12 +215,18 @@ final class AirPlayRemux: @unchecked Sendable {
         guard err >= 0, let oc = ocOpt else { fail("Couldn't prepare the video for AirPlay."); return }
         defer { avformat_free_context(oc) }
         oc.pointee.avoid_negative_ts = 2 // AVFMT_AVOID_NEG_TS_MAKE_ZERO
+        oc.pointee.max_interleave_delta = 3_000_000 // don't hold the picture back long waiting for sparse subtitles
 
         guard let vOut = avformat_new_stream(oc, nil) else { fail("Out of memory"); return }
         avcodec_parameters_copy(vOut.pointee.codecpar, vIn.pointee.codecpar)
         // Apple wants HEVC tagged "hvc1"; everything else gets the format's default tag
         vOut.pointee.codecpar.pointee.codec_tag = isHEVC ? Self.tag("hvc1") : 0
         vOut.pointee.time_base = vIn.pointee.time_base
+
+        // The master playlist needs a bit rate; MKVs often don't say, so use the file's overall rate
+        if vOut.pointee.codecpar.pointee.bit_rate <= 0 {
+            vOut.pointee.codecpar.pointee.bit_rate = input.pointee.bit_rate > 0 ? input.pointee.bit_rate : 8_000_000
+        }
 
         // The sound: copied when the Apple TV can play it, otherwise turned into AAC
         var audio: AudioTranscoder?
@@ -239,7 +252,31 @@ final class AirPlayRemux: @unchecked Sendable {
             }
         }
 
+        // Subtitles: text ones (SRT, ASS, WebVTT) become a WebVTT track the TV can switch on and off
+        var sIn: UnsafeMutablePointer<AVStream>?
+        var sOut: UnsafeMutablePointer<AVStream>?
+        var sKind = ""
+        if sIndex >= 0, let vtt = avcodec_descriptor_get_by_name("webvtt"), let o = avformat_new_stream(oc, nil) {
+            let st = input.pointee.streams[sIndex]!
+            sIn = st
+            sOut = o
+            sKind = Self.codecName(st.pointee.codecpar.pointee.codec_id)
+            o.pointee.codecpar.pointee.codec_type = vtt.pointee.type
+            o.pointee.codecpar.pointee.codec_id = vtt.pointee.id
+            o.pointee.time_base = AVRational(num: 1, den: 1000)
+        }
+
         var hls: OpaquePointer?
+        if sOut != nil {
+            // One variant with picture, sound and subtitles, plus a master playlist naming the subtitle track
+            let lang = sIn.flatMap { Self.language($0) }
+            var map = aOut != nil ? "v:0,a:0,s:0,sgroup:subs" : "v:0,s:0,sgroup:subs"
+            if let l = lang { map += ",language:\(l)" }
+            map += ",sname:" + Self.languageName(lang)
+            map += ",default:" + (showSubtitles ? "YES" : "NO")
+            av_dict_set(&hls, "var_stream_map", map, 0)
+        }
+        av_dict_set(&hls, "master_pl_name", "master.m3u8", 0)
         av_dict_set(&hls, "hls_time", "4", 0)
         av_dict_set(&hls, "hls_list_size", "0", 0)
         av_dict_set(&hls, "hls_playlist_type", "event", 0)
@@ -284,6 +321,12 @@ final class AirPlayRemux: @unchecked Sendable {
             let inStream: UnsafeMutablePointer<AVStream>
             if si == vIndex { inStream = vIn }
             else if si == aIndex, let a = aIn { inStream = a }
+            else if Int(si) == sIndex, let st = sIn {
+                // Subtitles: only once the picture has started, timed from the same point
+                guard let b = baseUs, let o = sOut else { continue }
+                writeSubtitle(pkt, from: st, kind: sKind, to: o, baseUs: b, oc: oc)
+                continue
+            }
             else { continue }
             let tb = inStream.pointee.time_base
 
@@ -355,8 +398,108 @@ final class AirPlayRemux: @unchecked Sendable {
 
     /// The playlist lists at least `n` finished segments.
     private func segmentsReady(_ n: Int) -> Bool {
-        guard let text = try? String(contentsOf: dir.appendingPathComponent("index.m3u8"), encoding: .utf8) else { return false }
+        guard FileManager.default.fileExists(atPath: dir.appendingPathComponent("master.m3u8").path),
+              let text = try? String(contentsOf: dir.appendingPathComponent("index.m3u8"), encoding: .utf8) else { return false }
         return text.components(separatedBy: "#EXTINF").count - 1 >= n
+    }
+
+    // MARK: subtitles
+
+    private static let textSubtitles: Set<String> = ["subrip", "srt", "ass", "ssa", "webvtt", "text", "mov_text"]
+
+    private static func isSubtitle(_ st: UnsafeMutablePointer<AVStream>) -> Bool {
+        guard let t = av_get_media_type_string(st.pointee.codecpar.pointee.codec_type) else { return false }
+        return String(cString: t) == "subtitle"
+    }
+
+    static func language(_ st: UnsafeMutablePointer<AVStream>) -> String? {
+        guard let e = av_dict_get(st.pointee.metadata, "language", nil, 0), let v = e.pointee.value else { return nil }
+        let l = String(cString: v).lowercased().filter { $0.isLetter }
+        return l.isEmpty || l == "und" ? nil : l
+    }
+
+    /// A one-word name for the TV's subtitle menu.
+    static func languageName(_ code: String?) -> String {
+        guard let c = code else { return "Subtitles" }
+        let names = ["en": "English", "eng": "English", "fr": "French", "fre": "French", "fra": "French",
+                     "de": "German", "ger": "German", "deu": "German", "es": "Spanish", "spa": "Spanish",
+                     "it": "Italian", "ita": "Italian", "pt": "Portuguese", "por": "Portuguese",
+                     "nl": "Dutch", "dut": "Dutch", "nld": "Dutch", "ar": "Arabic", "ara": "Arabic",
+                     "tr": "Turkish", "tur": "Turkish", "pl": "Polish", "pol": "Polish", "ru": "Russian", "rus": "Russian",
+                     "hi": "Hindi", "hin": "Hindi", "ur": "Urdu", "urd": "Urdu", "bn": "Bengali", "ben": "Bengali",
+                     "sv": "Swedish", "swe": "Swedish", "da": "Danish", "dan": "Danish", "no": "Norwegian", "nor": "Norwegian",
+                     "fi": "Finnish", "fin": "Finnish", "el": "Greek", "gre": "Greek", "ell": "Greek",
+                     "ja": "Japanese", "jpn": "Japanese", "ko": "Korean", "kor": "Korean", "zh": "Chinese", "chi": "Chinese", "zho": "Chinese"]
+        return names[c] ?? c.uppercased()
+    }
+
+    /// The file's subtitle track to send: the one the phone was showing if it's text, otherwise an English
+    /// (or the first) text track. Picture subtitles (PGS, VobSub) can't be sent. -1 when there's none.
+    private func pickSubtitles(_ input: UnsafeMutablePointer<AVFormatContext>) -> Int {
+        var subs: [Int] = []
+        for i in 0..<Int(input.pointee.nb_streams) where Self.isSubtitle(input.pointee.streams[i]!) { subs.append(i) }
+        let text = subs.filter { Self.textSubtitles.contains(Self.codecName(input.pointee.streams[$0]!.pointee.codecpar.pointee.codec_id)) }
+        if let n = subtitleChoice, n >= 0, n < subs.count, text.contains(subs[n]) { return subs[n] }
+        if let en = text.first(where: { ["en", "eng"].contains(Self.language(input.pointee.streams[$0]!) ?? "") }) { return en }
+        return text.first ?? -1
+    }
+
+    /// Turn one subtitle packet into a WebVTT cue and write it.
+    private func writeSubtitle(_ pkt: UnsafeMutablePointer<AVPacket>, from st: UnsafeMutablePointer<AVStream>, kind: String,
+                               to o: UnsafeMutablePointer<AVStream>, baseUs: Int64, oc: UnsafeMutablePointer<AVFormatContext>) {
+        guard let data = pkt.pointee.data, pkt.pointee.size > 0 else { return }
+        var bytes = Data(bytes: data, count: Int(pkt.pointee.size))
+        if kind == "mov_text", bytes.count >= 2 { // 2-byte length, then the text
+            let n = Int(bytes[bytes.startIndex]) << 8 | Int(bytes[bytes.startIndex + 1])
+            bytes = bytes.subdata(in: bytes.startIndex + 2 ..< bytes.startIndex + 2 + min(n, bytes.count - 2))
+        }
+        let cue = Self.webVTTText(String(decoding: bytes, as: UTF8.self), kind: kind)
+        guard !cue.isEmpty else { return }
+
+        let tb = st.pointee.time_base
+        let ms = AVRational(num: 1, den: 1000)
+        let pts = pkt.pointee.pts != Int64.min ? pkt.pointee.pts : pkt.pointee.dts
+        guard pts != Int64.min else { return }
+        let startMs = av_rescale_q(av_rescale_q(pts, tb, Self.microseconds) - baseUs, Self.microseconds, ms)
+        var durMs = pkt.pointee.duration > 0 ? av_rescale_q(pkt.pointee.duration, tb, ms) : 0
+        if durMs <= 0 { durMs = 4000 }
+        guard startMs + durMs > 0 else { return } // over before the picture starts
+        let start = max(0, startMs)
+
+        var outOpt: UnsafeMutablePointer<AVPacket>? = av_packet_alloc()
+        defer { av_packet_free(&outOpt) }
+        guard let out = outOpt else { return }
+        let utf8 = Array(cue.utf8)
+        guard av_new_packet(out, Int32(utf8.count)) >= 0 else { return }
+        utf8.withUnsafeBufferPointer { b in out.pointee.data.update(from: b.baseAddress!, count: utf8.count) }
+        out.pointee.stream_index = o.pointee.index
+        out.pointee.pts = start
+        out.pointee.dts = start
+        out.pointee.duration = durMs - (start - startMs)
+        av_packet_rescale_ts(out, ms, o.pointee.time_base)
+        av_interleaved_write_frame(oc, out)
+    }
+
+    /// SRT / ASS / WebVTT text → the text of a WebVTT cue (italic, bold and underline kept).
+    static func webVTTText(_ raw: String, kind: String) -> String {
+        var t = raw
+        if kind == "ass" || kind == "ssa" {
+            // "ReadOrder,Layer,Style,Name,MarginL,MarginR,MarginV,Effect,Text"
+            let parts = t.split(separator: ",", maxSplits: 8, omittingEmptySubsequences: false)
+            if parts.count == 9 { t = String(parts[8]) }
+            t = t.replacingOccurrences(of: "{\\i1}", with: "<i>").replacingOccurrences(of: "{\\i0}", with: "</i>")
+            t = t.replacingOccurrences(of: "\\{[^}]*\\}", with: "", options: .regularExpression)
+            t = t.replacingOccurrences(of: "\\N", with: "\n").replacingOccurrences(of: "\\n", with: "\n")
+                .replacingOccurrences(of: "\\h", with: " ")
+        }
+        t = t.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+        // Only the tags WebVTT knows; others (font colours…) are dropped
+        t = t.replacingOccurrences(of: "<(?!/?[ibu]>)[^>]*>", with: "", options: .regularExpression)
+        t = t.replacingOccurrences(of: "&(?![a-zA-Z]+;|#[0-9]+;)", with: "&amp;", options: .regularExpression)
+        t = t.replacingOccurrences(of: "-->", with: "→")
+        // A blank line would end the cue early
+        t = t.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.joined(separator: "\n")
+        return t
     }
 
     private static func tag(_ s: String) -> UInt32 {

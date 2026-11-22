@@ -39,6 +39,9 @@ final class CastController: NSObject, ObservableObject {
     private var remuxSource: URL?
     /// Where the current remux started (the TV's clock counts from there).
     private var remuxOffset: Double = 0
+    /// The phone's subtitle choice when AirPlay started: which of the file's tracks, and whether they were on.
+    private var subtitleChoice: Int?
+    private var showSubtitles = false
     /// Don't try AirPlay again for something that just failed, until AirPlay is turned off.
     private var failedItem: String?
     private var timeObserver: Any?
@@ -167,9 +170,15 @@ final class CastController: NSObject, ObservableObject {
         message = nil
         deviceName = name
         if store.player.playing { store.player.togglePause() }
+        // Subtitles on the TV follow the phone: the same track, shown if they were on
+        let p = store.player
+        let embedded = p.subtitleTracks.filter { $0.id >= 0 }
+        subtitleChoice = embedded.firstIndex(where: { $0.id == p.currentSubtitle })
+        showSubtitles = p.currentSubtitle >= 0
         if let src = src {
             startRemux(src, at: live ? 0 : store.player.time)
         } else {
+            if let it = avPlayer.currentItem { applySubtitles(it) }
             avPlayer.play()
         }
     }
@@ -182,13 +191,16 @@ final class CastController: NSObject, ObservableObject {
         remuxOffset = max(0, at)
         time = remuxOffset
         preparing = true
-        let r = AirPlayRemux(source: src, start: remuxOffset, userAgent: XtreamAPI.userAgent)
+        let r = AirPlayRemux(source: src, start: remuxOffset, userAgent: XtreamAPI.userAgent,
+                             subtitle: subtitleChoice, showSubtitles: showSubtitles)
         remux = r
         r.onReady = { [weak self, weak r] url, startedAt in
             guard let self = self, let r = r, self.remux === r, self.mode == .airplay else { return }
             self.remuxOffset = startedAt // the TV's clock counts from the keyframe it starts on
             self.time = startedAt
-            self.avPlayer.replaceCurrentItem(with: AVPlayerItem(url: url))
+            let item = AVPlayerItem(url: url)
+            self.avPlayer.replaceCurrentItem(with: item)
+            self.applySubtitles(item)
             self.avPlayer.play()
             self.preparing = false
         }
@@ -206,6 +218,21 @@ final class CastController: NSObject, ObservableObject {
             startAirPlay(name: airPlayOutput?.portName ?? "")
         } else if !on && mode == .airplay, airPlayOutput == nil {
             stop(resumeHere: true) // AirPlay turned off (here or from the TV)
+        }
+    }
+
+    /// Show the stream's subtitles on the TV if they were on on the phone, otherwise start with them off
+    /// (they can still be turned on from the Apple TV's own menu).
+    private func applySubtitles(_ item: AVPlayerItem) {
+        let show = showSubtitles
+        Task { @MainActor in
+            guard let group = try? await item.asset.loadMediaSelectionGroup(for: .legible) else { return }
+            let options = group.options.filter { !$0.hasMediaCharacteristic(.containsOnlyForcedSubtitles) }
+            if show, let o = options.first {
+                item.select(o, in: group)
+            } else if group.allowsEmptySelection {
+                item.select(nil, in: group)
+            }
         }
     }
 

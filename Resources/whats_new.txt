@@ -1,3 +1,4 @@
+- Subtitles now go to the Apple TV when you AirPlay an MKV film or episode: the same track as on your phone, shown if you had them on (switch them on or off from the Apple TV's subtitle menu). Text subtitles only; picture ones (PGS, VobSub) can't be sent.
 - AirPlay now sends the picture to your Apple TV, not just the sound.
 - MKV films and episodes can be AirPlayed too: your iPhone repackages them for the Apple TV as you watch (keep the phone on the same Wi-Fi as the TV; it can be locked). Skipping, resuming and Skip Intro still work.
 - Settings looks like the Android app now: rounded rows with the setting on the right. Tap a row to turn it on or off, or to move to the next choice.
